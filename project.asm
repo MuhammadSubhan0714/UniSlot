@@ -69,7 +69,9 @@ slmsg BYTE "Enter Slot (1-8): ",0
 crmsg BYTE "Enter Credit Hours: ",0
 kindmsg BYTE "Enter Type (1 Core, 2 Normal, 3 Lab): ",0
 studentsmsg BYTE "Enter Students in Section (1-40): ",0
+studentsReusedMsg BYTE "Existing section enrollment reused: ",0
 breakmsg BYTE "Enter Break After Slot (3, 4, or 5): ",0
+breakReusedMsg BYTE "Existing break position reused (after slot): ",0
 
 nmsg BYTE "Class Added Successfully!",0
 emsg BYTE "Class Updated Successfully!",0
@@ -78,7 +80,7 @@ fmsg BYTE "Maximum Record Limit Reached!",0
 nomsg BYTE "No Records Available!",0
 imsg2 BYTE "Invalid Record Number!",0
 clashmsg BYTE "Schedule clash! Another class is using this time.",0
-breakerr BYTE "Break position must be the same for all classes that day.",0
+breakerr BYTE "Break position must match other classes for the same section and day.",0
 sectionerr BYTE "Student count for this section must stay the same (max 40).",0
 dailyfull BYTE "Maximum 8 classes allowed per day.",0
 sectionLimitErr BYTE "Maximum unique section limit reached.",0
@@ -129,6 +131,9 @@ editingIndex DWORD 0FFFFFFFFh
 validationPtr DWORD 0
 sectionMatch DWORD 0
 courseMatch DWORD 0
+sectionLookupPtr DWORD 0
+sectionStudentCount DWORD 0
+sectionBreakValue DWORD 0
 courseMeetingCount DWORD 0
 currentRecordPtr DWORD 0
 currentRecordIndex DWORD 0
@@ -607,11 +612,23 @@ sectioninput:
     mov ecx, 9
     call ReadString
     cmp eax, 0
-    jne dayinput
+    jne sectionlookup
     mov edx, OFFSET requiredfielderr
     call WriteString
     call Crlf
     jmp sectioninput
+
+sectionlookup:
+    mov sectionLookupPtr, esi
+    call findSectionEnrollment
+    mov sectionStudentCount, eax
+    cmp eax, 0
+    je dayinput
+    mov edx, OFFSET studentsReusedMsg
+    call WriteString
+    mov eax, sectionStudentCount
+    call WriteDec
+    call Crlf
 
 dayinput:
 
@@ -664,6 +681,10 @@ slotvalid:
     mov [esi+slotoff], eax
 
 breakinput:
+    call findSectionDayBreak
+    mov sectionBreakValue, eax
+    cmp eax, 0
+    jne breakreuse
     mov edx, OFFSET breakmsg
     call WriteString
     call ReadInt
@@ -682,6 +703,15 @@ breakminok:
     jmp breakinput
 breakvalid:
     mov [esi+breakoff], eax
+    jmp kindinput
+
+breakreuse:
+    mov eax, sectionBreakValue
+    mov [esi+breakoff], eax
+    mov edx, OFFSET breakReusedMsg
+    call WriteString
+    call WriteDec
+    call Crlf
 
 kindinput:
     mov edx, OFFSET kindmsg
@@ -747,6 +777,9 @@ creditok:
     mov [esi+creditoff], eax
 
 studentinput:
+    mov eax, sectionStudentCount
+    cmp eax, 0
+    jne studentreuse
     mov edx, OFFSET studentsmsg
     call WriteString
     call ReadInt
@@ -765,10 +798,79 @@ studentminok:
     jmp studentinput
 studentsvalid:
     mov [esi+studentsoff], eax
+    ret
 
+studentreuse:
+    mov [esi+studentsoff], eax
     ret
 
 readRecord ENDP
+
+; Return the saved enrollment for an existing section, or zero if it is new.
+findSectionEnrollment PROC USES ebx esi edi
+    xor ebx, ebx
+fse_loop:
+    cmp ebx, recordcount
+    jae fse_not_found
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov edi, sectionLookupPtr
+    lea esi, [esi+sectionoff]
+    lea edi, [edi+sectionoff]
+    call compareStr
+    cmp eax, 1
+    je fse_found
+    inc ebx
+    jmp fse_loop
+fse_found:
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov eax, [esi+studentsoff]
+    ret
+fse_not_found:
+    xor eax, eax
+    ret
+findSectionEnrollment ENDP
+
+; Return a saved break for the same section/day, skipping the edited record.
+findSectionDayBreak PROC USES ebx esi edi
+    xor ebx, ebx
+fsdb_loop:
+    cmp ebx, recordcount
+    jae fsdb_not_found
+    cmp ebx, editingIndex
+    je fsdb_next
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov edi, sectionLookupPtr
+    lea esi, [esi+sectionoff]
+    lea edi, [edi+sectionoff]
+    call compareStr
+    cmp eax, 1
+    jne fsdb_next
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov edi, sectionLookupPtr
+    mov eax, [esi+dayoff]
+    cmp eax, [edi+dayoff]
+    jne fsdb_next
+    mov eax, [esi+breakoff]
+    ret
+fsdb_next:
+    inc ebx
+    jmp fsdb_loop
+fsdb_not_found:
+    xor eax, eax
+    ret
+findSectionDayBreak ENDP
 
 
 ; new record array ke end mein add karna
