@@ -1,8 +1,12 @@
 INCLUDE Irvine32.inc
 
+MAX_RECORDS EQU 1000
+MAX_SECTIONS EQU 25
+MAX_COURSES EQU 50
+
 ; har class ka record store karne ke liye structure
 classrecord STRUCT
-    course BYTE 20 DUP(?)
+    course BYTE 30 DUP(?)
     teacher BYTE 30 DUP(?)
     room BYTE 10 DUP(?)
     section BYTE 10 DUP(?)
@@ -16,15 +20,15 @@ classrecord ENDS
 
 ; structure fields ke offsets
 courseoff EQU 0
-teacheroff EQU 20
-roomoff EQU 50
-sectionoff EQU 60
-dayoff EQU 70
-slotoff EQU 74
-creditoff EQU 78
-breakoff EQU 82
-kindoff EQU 86
-studentsoff EQU 90
+teacheroff EQU 30
+roomoff EQU 60
+sectionoff EQU 70
+dayoff EQU 80
+slotoff EQU 84
+creditoff EQU 88
+breakoff EQU 92
+kindoff EQU 96
+studentsoff EQU 100
 recordsize EQU SIZEOF classrecord
 
 .data
@@ -77,7 +81,22 @@ clashmsg BYTE "Schedule clash! Another class is using this time.",0
 breakerr BYTE "Break position must be the same for all classes that day.",0
 sectionerr BYTE "Student count for this section must stay the same (max 40).",0
 dailyfull BYTE "Maximum 8 classes allowed per day.",0
+sectionLimitErr BYTE "Maximum unique section limit reached.",0
+courseLimitErr BYTE "Maximum unique course limit reached.",0
 crediterr BYTE "Invalid credit hours for selected class type.",0
+weeklyMeetingErr BYTE "This course already has its weekly meeting limit based on credits.",0
+dayerr BYTE "Invalid day! Enter a value from 1 to 5.",0
+sloterr BYTE "Invalid slot! Enter a value from 1 to 8.",0
+breakinputerr BYTE "Invalid break! Enter 3, 4, or 5 so neither class run exceeds 5.",0
+kinderr BYTE "Invalid type! Enter 1 for Core, 2 for Normal, or 3 for Lab.",0
+studentserr BYTE "Invalid student count! Enter a value from 1 to 40.",0
+findsectionmsg BYTE "Enter Section: ",0
+findcoursemsg BYTE "Enter Course Name: ",0
+finddaymsg BYTE "Enter Day (1 Monday - 5 Friday): ",0
+findslotmsg BYTE "Enter Slot (1-8; class time is calculated from slot): ",0
+emptysectionerr BYTE "Section cannot be blank.",0
+emptycourseerr BYTE "Course name cannot be blank.",0
+requiredfielderr BYTE "This field is required and cannot be blank.",0
 
 rtitle BYTE "========== CLASS RECORDS ==========",0
 rnum BYTE "Record Number: ",0
@@ -103,12 +122,22 @@ dayname4 BYTE "Thursday",0
 dayname5 BYTE "Friday",0
 
 recordcount DWORD 0
-records BYTE 100 * recordsize DUP(0)
+records BYTE MAX_RECORDS * recordsize DUP(0)
+editBuffer BYTE recordsize DUP(0)
 breakByDay DWORD 5 DUP(0)
 editingIndex DWORD 0FFFFFFFFh
 validationPtr DWORD 0
+sectionMatch DWORD 0
+courseMatch DWORD 0
+courseMeetingCount DWORD 0
+currentRecordPtr DWORD 0
+currentRecordIndex DWORD 0
+creditScanIndex DWORD 0
+lookupCourseBuf BYTE 30 DUP(0)
+lookupDay DWORD 0
+lookupSlot DWORD 0
 fileName BYTE "unislot.dat",0
-fileBuffer BYTE 4 + 100 * recordsize DUP(0)
+fileBuffer BYTE 4 + MAX_RECORDS * recordsize DUP(0)
 fileBytes DWORD 0
 
 ; --- Student Panel ke variables aur messages ---
@@ -117,7 +146,28 @@ sop1 BYTE "1. View All Timetable",0
 sop2 BYTE "2. Search by Course",0
 sop3 BYTE "3. Search by Section",0
 sop4 BYTE "4. Filter Classes by Day",0
-sop5 BYTE "5. Back to Main Menu",0
+sop5 BYTE "5. Search by Teacher",0
+sop6 BYTE "6. Back to Main Menu",0
+teacherSearchMsg BYTE "Enter Teacher Name: ",0
+availableCoursesTitle BYTE "Available Courses:",0
+availableSectionsTitle BYTE "Available Sections:",0
+availableTeachersTitle BYTE "Available Teachers:",0
+sectionStatusLabel BYTE "Sections in use / maximum: ",0
+courseStatusLabel BYTE "Unique courses in use / maximum: ",0
+sectionFormatInfo BYTE "Section format: up to 9 characters (example: S001).",0
+slashText BYTE " / ",0
+availableOuter DWORD 0
+availableInner DWORD 0
+availablePtr DWORD 0
+availableDuplicate DWORD 0
+uniqueOffset DWORD 0
+uniqueOuter DWORD 0
+uniqueInner DWORD 0
+uniquePtr DWORD 0
+uniqueDuplicate DWORD 0
+uniqueCount DWORD 0
+newSectionFound DWORD 0
+newCourseFound DWORD 0
 
 rteacher BYTE "Teacher: ",0
 rroom BYTE "Room: ",0
@@ -137,7 +187,8 @@ slotHeader5 BYTE "5",0
 slotHeader6 BYTE "6",0
 slotHeader7 BYTE "7",0
 slotHeader8 BYTE "8",0
-gridKeyTitle BYTE "Record # = Class details below",0
+gridKeyTitle BYTE "Course ID = Course details (each course appears once)",0
+gridSectionPrompt BYTE "Enter Section Name to View: ",0
 gridKeyCourse BYTE " | Course: ",0
 gridKeySection BYTE " | Section: ",0
 gridKeyTeacher BYTE " | Teacher: ",0
@@ -149,6 +200,14 @@ gridSlot DWORD 0
 gridIndex DWORD 0
 gridFound DWORD 0
 gridRecordNumber DWORD 0
+gridSection BYTE 10 DUP(0)
+gridSectionFound DWORD 0
+courseIds DWORD MAX_RECORDS DUP(0)
+gridCourseCount DWORD 0
+gridCourseID DWORD 0
+gridFindIndex DWORD 0
+gridInner DWORD 0
+gridMatchedCourseID DWORD 0
 
 search_str BYTE 30 DUP(0)
 day_filter DWORD 0
@@ -422,6 +481,7 @@ adminloop:
     mov edx, OFFSET adminmsg
     call WriteString
     call Crlf
+    call showAdminStatus
     call Crlf
 
     mov edx, OFFSET aop1
@@ -493,15 +553,22 @@ adminMenu ENDP
 
 ; user se ek class ka data input lene ke liye
 readRecord PROC USES esi
-
+courseinput:
     mov edx, OFFSET cmsg
     call WriteString
 
     mov BYTE PTR [esi+courseoff], 0
     lea edx, [esi+courseoff]
-    mov ecx, 19
+    mov ecx, 29
     call ReadString
+    cmp eax, 0
+    jne teacherinput
+    mov edx, OFFSET requiredfielderr
+    call WriteString
+    call Crlf
+    jmp courseinput
 
+teacherinput:
     mov edx, OFFSET tmsg
     call WriteString
 
@@ -509,7 +576,14 @@ readRecord PROC USES esi
     lea edx, [esi+teacheroff]
     mov ecx, 29
     call ReadString
+    cmp eax, 0
+    jne roominput
+    mov edx, OFFSET requiredfielderr
+    call WriteString
+    call Crlf
+    jmp teacherinput
 
+roominput:
     mov edx, OFFSET rmsg
     call WriteString
 
@@ -517,7 +591,14 @@ readRecord PROC USES esi
     lea edx, [esi+roomoff]
     mov ecx, 9
     call ReadString
+    cmp eax, 0
+    jne sectioninput
+    mov edx, OFFSET requiredfielderr
+    call WriteString
+    call Crlf
+    jmp roominput
 
+sectioninput:
     mov edx, OFFSET secmsg
     call WriteString
 
@@ -525,6 +606,12 @@ readRecord PROC USES esi
     lea edx, [esi+sectionoff]
     mov ecx, 9
     call ReadString
+    cmp eax, 0
+    jne dayinput
+    mov edx, OFFSET requiredfielderr
+    call WriteString
+    call Crlf
+    jmp sectioninput
 
 dayinput:
 
@@ -534,11 +621,21 @@ dayinput:
     call ReadInt
 
     cmp eax, 1
-    jl dayinput
+    jge dayminok
+    mov edx, OFFSET dayerr
+    call WriteString
+    call Crlf
+    jmp dayinput
 
+dayminok:
     cmp eax, 5
-    jg dayinput
+    jle dayvalid
+    mov edx, OFFSET dayerr
+    call WriteString
+    call Crlf
+    jmp dayinput
 
+dayvalid:
     mov [esi+dayoff], eax
 
 slotinput:
@@ -549,11 +646,21 @@ slotinput:
     call ReadInt
 
     cmp eax, 1
-    jl slotinput
+    jge slotminok
+    mov edx, OFFSET sloterr
+    call WriteString
+    call Crlf
+    jmp slotinput
 
+slotminok:
     cmp eax, 8
-    jg slotinput
+    jle slotvalid
+    mov edx, OFFSET sloterr
+    call WriteString
+    call Crlf
+    jmp slotinput
 
+slotvalid:
     mov [esi+slotoff], eax
 
 breakinput:
@@ -561,9 +668,19 @@ breakinput:
     call WriteString
     call ReadInt
     cmp eax, 3
-    jl breakinput
+    jge breakminok
+    mov edx, OFFSET breakinputerr
+    call WriteString
+    call Crlf
+    jmp breakinput
+breakminok:
     cmp eax, 5
-    jg breakinput
+    jle breakvalid
+    mov edx, OFFSET breakinputerr
+    call WriteString
+    call Crlf
+    jmp breakinput
+breakvalid:
     mov [esi+breakoff], eax
 
 kindinput:
@@ -571,9 +688,19 @@ kindinput:
     call WriteString
     call ReadInt
     cmp eax, 1
-    jl kindinput
+    jge kindminok
+    mov edx, OFFSET kinderr
+    call WriteString
+    call Crlf
+    jmp kindinput
+kindminok:
     cmp eax, 3
-    jg kindinput
+    jle kindvalid
+    mov edx, OFFSET kinderr
+    call WriteString
+    call Crlf
+    jmp kindinput
+kindvalid:
     mov [esi+kindoff], eax
 
 creditinput:
@@ -584,22 +711,37 @@ creditinput:
     call ReadInt
 
     cmp eax, 1
-    jl creditinput
+    jge creditminok
+    mov edx, OFFSET crediterr
+    call WriteString
+    call Crlf
+    jmp creditinput
+creditminok:
 
     cmp DWORD PTR [esi+kindoff], 1
     jne normalcredit
     cmp eax, 3
-    jg creditinput
-    jmp creditok
+    jle creditok
+    mov edx, OFFSET crediterr
+    call WriteString
+    call Crlf
+    jmp creditinput
 normalcredit:
     cmp DWORD PTR [esi+kindoff], 2
     jne labcredit
     cmp eax, 2
-    jg creditinput
-    jmp creditok
+    jle creditok
+    mov edx, OFFSET crediterr
+    call WriteString
+    call Crlf
+    jmp creditinput
 labcredit:
     cmp eax, 1
-    jne creditinput
+    je creditok
+    mov edx, OFFSET crediterr
+    call WriteString
+    call Crlf
+    jmp creditinput
 
 creditok:
     mov [esi+creditoff], eax
@@ -609,9 +751,19 @@ studentinput:
     call WriteString
     call ReadInt
     cmp eax, 1
-    jl studentinput
+    jge studentminok
+    mov edx, OFFSET studentserr
+    call WriteString
+    call Crlf
+    jmp studentinput
+studentminok:
     cmp eax, 40
-    jg studentinput
+    jle studentsvalid
+    mov edx, OFFSET studentserr
+    call WriteString
+    call Crlf
+    jmp studentinput
+studentsvalid:
     mov [esi+studentsoff], eax
 
     ret
@@ -622,7 +774,7 @@ readRecord ENDP
 ; new record array ke end mein add karna
 addRecord PROC USES esi
 
-    cmp recordcount, 100
+    cmp recordcount, MAX_RECORDS
     jae recordFull
 
     mov eax, recordcount
@@ -632,6 +784,12 @@ addRecord PROC USES esi
     add esi, eax
 
     mov editingIndex, 0FFFFFFFFh
+
+    call showAvailableCourses
+    call showAvailableSections
+    mov edx, OFFSET sectionFormatInfo
+    call WriteString
+    call Crlf
 
     call readRecord
     call validateRecord
@@ -774,145 +932,287 @@ noRecords:
 
 listRecords ENDP
 
+; Count distinct strings at uniqueOffset. editingIndex is excluded during edits.
+countUniqueValues PROC USES ebx ecx esi edi
+    mov uniqueCount, 0
+    mov uniqueOuter, 0
+cuv_outer:
+    mov eax, uniqueOuter
+    cmp eax, recordcount
+    jae cuv_done
+    mov eax, uniqueOuter
+    cmp eax, editingIndex
+    je cuv_next_outer
+    mov eax, uniqueOuter
+    imul eax, recordsize
+    add eax, OFFSET records
+    add eax, uniqueOffset
+    mov uniquePtr, eax
+    mov uniqueInner, 0
+    mov uniqueDuplicate, 0
+cuv_inner:
+    mov eax, uniqueInner
+    cmp eax, uniqueOuter
+    jae cuv_count
+    cmp eax, editingIndex
+    je cuv_next_inner
+    mov eax, uniqueInner
+    imul eax, recordsize
+    add eax, OFFSET records
+    add eax, uniqueOffset
+    mov esi, eax
+    mov edi, uniquePtr
+    call compareStr
+    cmp eax, 1
+    je cuv_is_duplicate
+cuv_next_inner:
+    inc uniqueInner
+    jmp cuv_inner
+cuv_is_duplicate:
+    mov uniqueDuplicate, 1
+cuv_count:
+    cmp uniqueDuplicate, 1
+    je cuv_next_outer
+    inc uniqueCount
+cuv_next_outer:
+    inc uniqueOuter
+    jmp cuv_outer
+cuv_done:
+    mov eax, uniqueCount
+    ret
+countUniqueValues ENDP
 
-; kisi existing record ko edit karna
-editRecord PROC USES esi
+showAdminStatus PROC USES eax edx
+    mov edx, OFFSET sectionStatusLabel
+    call WriteString
+    mov uniqueOffset, sectionoff
+    call countUniqueValues
+    call WriteDec
+    mov edx, OFFSET slashText
+    call WriteString
+    mov eax, MAX_SECTIONS
+    call WriteDec
+    call Crlf
 
+    mov edx, OFFSET courseStatusLabel
+    call WriteString
+    mov uniqueOffset, courseoff
+    call countUniqueValues
+    call WriteDec
+    mov edx, OFFSET slashText
+    call WriteString
+    mov eax, MAX_COURSES
+    call WriteDec
+    call Crlf
+
+    mov edx, OFFSET sectionFormatInfo
+    call WriteString
+    call Crlf
+    ret
+showAdminStatus ENDP
+
+; Find a record by section, course, day, and slot (slot determines its time).
+findRecordByKeys PROC USES ebx esi edi
+fr_section:
+    mov edx, OFFSET findsectionmsg
+    call WriteString
+    mov edx, OFFSET search_str
+    mov ecx, 9
+    call ReadString
+    cmp eax, 0
+    jne fr_course
+    mov edx, OFFSET emptysectionerr
+    call WriteString
+    call Crlf
+    jmp fr_section
+fr_course:
+    mov edx, OFFSET findcoursemsg
+    call WriteString
+    mov edx, OFFSET lookupCourseBuf
+    mov ecx, 29
+    call ReadString
+    cmp eax, 0
+    jne fr_day
+    mov edx, OFFSET emptycourseerr
+    call WriteString
+    call Crlf
+    jmp fr_course
+fr_day:
+    mov edx, OFFSET finddaymsg
+    call WriteString
+    call ReadInt
+    cmp eax, 1
+    jl fr_day_error
+    cmp eax, 5
+    jg fr_day_error
+    mov lookupDay, eax
+    jmp fr_slot
+fr_day_error:
+    mov edx, OFFSET dayerr
+    call WriteString
+    call Crlf
+    jmp fr_day
+fr_slot:
+    mov edx, OFFSET findslotmsg
+    call WriteString
+    call ReadInt
+    cmp eax, 1
+    jl fr_slot_error
+    cmp eax, 8
+    jg fr_slot_error
+    mov lookupSlot, eax
+    jmp fr_search
+fr_slot_error:
+    mov edx, OFFSET sloterr
+    call WriteString
+    call Crlf
+    jmp fr_slot
+fr_search:
+    xor ebx, ebx
+fr_loop:
+    cmp ebx, recordcount
+    jae fr_not_found
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    mov eax, [esi+dayoff]
+    cmp eax, lookupDay
+    jne fr_next
+    mov eax, [esi+slotoff]
+    cmp eax, lookupSlot
+    jne fr_next
+    lea esi, [esi+sectionoff]
+    mov edi, OFFSET search_str
+    call compareStr
+    cmp eax, 1
+    jne fr_next
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    lea esi, [esi+courseoff]
+    mov edi, OFFSET lookupCourseBuf
+    call compareStr
+    cmp eax, 1
+    je fr_found
+fr_next:
+    inc ebx
+    jmp fr_loop
+fr_found:
+    mov eax, ebx
+    ret
+fr_not_found:
+    mov eax, 0FFFFFFFFh
+    ret
+findRecordByKeys ENDP
+
+; Edit without printing the entire 1,000-record table. Input is validated in
+; a temporary record so a rejected edit cannot damage the saved record.
+editRecord PROC USES esi edi ecx
     cmp recordcount, 0
     je editEmpty
-
-    call listRecords
-
-    mov edx, OFFSET rchoose
+    call showAvailableCourses
+    call showAvailableSections
+    mov edx, OFFSET sectionFormatInfo
     call WriteString
-
-    call ReadInt
-
-    cmp eax, 1
-    jl editInvalid
-
-    cmp eax, recordcount
-    jg editInvalid
-
-    dec eax
+    call Crlf
+    call findRecordByKeys
+    cmp eax, 0FFFFFFFFh
+    je editNotFound
     mov editingIndex, eax
     imul eax, recordsize
-
     mov esi, OFFSET records
     add esi, eax
-
+    call showFullRecord
+    mov esi, OFFSET editBuffer
     call readRecord
+    mov esi, OFFSET editBuffer
     call validateRecord
     cmp eax, 1
     jne editRejected
+    mov edi, OFFSET records
+    mov eax, editingIndex
+    imul eax, recordsize
+    add edi, eax
+    mov esi, OFFSET editBuffer
+    mov ecx, recordsize
+    cld
+    rep movsb
+    mov editingIndex, 0FFFFFFFFh
     call saveData
-
     mov edx, OFFSET emsg
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
 editRejected:
+    mov editingIndex, 0FFFFFFFFh
     call WaitMsg
     ret
-
-editInvalid:
-
-    mov edx, OFFSET imsg2
+editNotFound:
+    mov edx, OFFSET notfound_msg
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
 editEmpty:
-
     mov edx, OFFSET nomsg
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
 editRecord ENDP
 
 
 ; record delete karke baaki records ko peeche shift karna
-deleteRecord PROC USES ebx esi edi
-
+deleteRecord PROC USES ebx ecx esi edi
     cmp recordcount, 0
     je deleteEmpty
-
-    call listRecords
-
-    mov edx, OFFSET rchoose
+    call showAvailableCourses
+    call showAvailableSections
+    mov edx, OFFSET sectionFormatInfo
     call WriteString
-
-    call ReadInt
-
-    cmp eax, 1
-    jl deleteInvalid
-
-    cmp eax, recordcount
-    jg deleteInvalid
-
-    dec eax
+    call Crlf
+    call findRecordByKeys
+    cmp eax, 0FFFFFFFFh
+    je deleteNotFound
     mov ebx, eax
-
     mov eax, recordcount
-    sub eax, ebx
     dec eax
-
-    cmp eax, 0
-    je deleteLast
-
+    sub eax, ebx
+    jz deleteLast
     mov ecx, eax
     imul ecx, recordsize
-
+    mov edi, OFFSET records
     mov eax, ebx
     imul eax, recordsize
-
-    mov edi, OFFSET records
     add edi, eax
-
     mov esi, edi
     add esi, recordsize
-
     cld
     rep movsb
-
 deleteLast:
-
     dec recordcount
+    mov editingIndex, 0FFFFFFFFh
     call saveData
-
     mov edx, OFFSET dmsg2
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
-deleteInvalid:
-
-    mov edx, OFFSET imsg2
+deleteNotFound:
+    mov edx, OFFSET notfound_msg
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
 deleteEmpty:
-
     mov edx, OFFSET nomsg
     call WriteString
     call Crlf
-
     call WaitMsg
     ret
-
 deleteRecord ENDP
 
 
@@ -920,12 +1220,15 @@ deleteRecord ENDP
 ; STUDENT PANEL AUR HELPER PROCEDURES
 ; ==========================================================
 
-; ESI points to the new/edited record. Validate section size consistency,
-; one 50-minute break position, daily limit, and campus-wide time clashes.
+; ESI points to the new/edited record. Different sections may run in parallel;
+; a section, teacher, or room cannot be double-booked at the same time.
 validateRecord PROC USES ebx ecx esi edi
     mov validationPtr, esi
     xor ebx, ebx
     xor ecx, ecx
+    mov courseMeetingCount, 0
+    mov newSectionFound, 0
+    mov newCourseFound, 0
 vr_loop:
     cmp ebx, recordcount
     jae vr_day_done
@@ -936,11 +1239,27 @@ vr_loop:
     imul eax, recordsize
     add esi, eax
     mov edi, validationPtr
+    lea esi, [esi+courseoff]
+    lea edi, [edi+courseoff]
+    call compareStr
+    cmp eax, 1
+    jne vr_section_check
+    mov newCourseFound, 1
+vr_section_check:
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    mov edi, validationPtr
+    mov sectionMatch, 0
+    mov courseMatch, 0
     lea esi, [esi+sectionoff]
     lea edi, [edi+sectionoff]
     call compareStr
     cmp eax, 1
     jne vr_check_day
+    mov sectionMatch, 1
+    mov newSectionFound, 1
     mov esi, OFFSET records
     mov eax, ebx
     imul eax, recordsize
@@ -948,8 +1267,36 @@ vr_loop:
     mov edi, validationPtr
     mov eax, [esi+studentsoff]
     cmp eax, [edi+studentsoff]
-    je vr_check_day
+    jne vr_section_bad
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    mov edi, validationPtr
+    lea esi, [esi+courseoff]
+    lea edi, [edi+courseoff]
+    call compareStr
+    cmp eax, 1
+    jne vr_check_day
+    mov courseMatch, 1
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    mov edi, validationPtr
+    mov eax, [esi+creditoff]
+    cmp eax, [edi+creditoff]
+    jne vr_credit_bad
+    inc courseMeetingCount
+    jmp vr_check_day
+vr_section_bad:
     mov edx, OFFSET sectionerr
+    call WriteString
+    call Crlf
+    xor eax, eax
+    ret
+vr_credit_bad:
+    mov edx, OFFSET crediterr
     call WriteString
     call Crlf
     xor eax, eax
@@ -964,6 +1311,8 @@ vr_check_day:
     mov eax, [esi+dayoff]
     cmp eax, [edi+dayoff]
     jne vr_next
+    cmp sectionMatch, 1
+    jne vr_check_slot
     inc ecx
     mov eax, [esi+breakoff]
     cmp eax, [edi+breakoff]
@@ -977,6 +1326,26 @@ vr_check_slot:
     mov eax, [esi+slotoff]
     cmp eax, [edi+slotoff]
     jne vr_next
+    cmp sectionMatch, 1
+    je vr_clash
+    ; Check teacher conflict.
+    lea esi, [esi+teacheroff]
+    lea edi, [edi+teacheroff]
+    call compareStr
+    cmp eax, 1
+    je vr_clash
+    ; Rebuild pointers and check room conflict.
+    mov esi, OFFSET records
+    mov eax, ebx
+    imul eax, recordsize
+    add esi, eax
+    mov edi, validationPtr
+    lea esi, [esi+roomoff]
+    lea edi, [edi+roomoff]
+    call compareStr
+    cmp eax, 1
+    jne vr_next
+vr_clash:
     mov edx, OFFSET clashmsg
     call WriteString
     call Crlf
@@ -988,7 +1357,43 @@ vr_next:
 
 vr_day_done:
     cmp ecx, 8
-    jb vr_ok
+    jae vr_daily_bad
+    mov eax, [validationPtr+creditoff]
+    cmp courseMeetingCount, eax
+    jae vr_meeting_bad
+    cmp newSectionFound, 1
+    je vr_course_limit_check
+    mov uniqueOffset, sectionoff
+    call countUniqueValues
+    cmp eax, MAX_SECTIONS
+    jae vr_section_limit_bad
+vr_course_limit_check:
+    cmp newCourseFound, 1
+    je vr_ok
+    mov uniqueOffset, courseoff
+    call countUniqueValues
+    cmp eax, MAX_COURSES
+    jae vr_course_limit_bad
+    jmp vr_ok
+vr_section_limit_bad:
+    mov edx, OFFSET sectionLimitErr
+    call WriteString
+    call Crlf
+    xor eax, eax
+    ret
+vr_course_limit_bad:
+    mov edx, OFFSET courseLimitErr
+    call WriteString
+    call Crlf
+    xor eax, eax
+    ret
+vr_meeting_bad:
+    mov edx, OFFSET weeklyMeetingErr
+    call WriteString
+    call Crlf
+    xor eax, eax
+    ret
+vr_daily_bad:
     mov edx, OFFSET dailyfull
     call WriteString
     call Crlf
@@ -1173,6 +1578,9 @@ st_loop:
     mov edx, OFFSET sop5
     call WriteString
     call Crlf
+    mov edx, OFFSET sop6
+    call WriteString
+    call Crlf
     call Crlf
 
     mov edx, OFFSET emessage
@@ -1188,6 +1596,8 @@ st_loop:
     cmp eax, 4
     je filter_day
     cmp eax, 5
+    je search_teacher
+    cmp eax, 6
     je st_exit
 
     mov edx, OFFSET imsg
@@ -1212,10 +1622,85 @@ filter_day:
     call filterByDay
     jmp st_loop
 
+search_teacher:
+    call searchByTeacher
+    jmp st_loop
+
 st_exit:
     ret
 studentMenu ENDP
 
+
+; Assign one ID per unique course in the selected section. Repeated weekly
+; meetings of the same course reuse that ID in every timetable slot.
+buildSectionCourseIDs PROC USES eax ebx ecx edx esi edi
+    mov gridCourseCount, 0
+    mov gridIndex, 0
+bsc_outer:
+    mov eax, gridIndex
+    cmp eax, recordcount
+    jae bsc_done
+    mov eax, gridIndex
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+sectionoff]
+    mov edi, OFFSET gridSection
+    call compareStr
+    cmp eax, 1
+    jne bsc_not_section
+
+    mov gridInner, 0
+    mov gridMatchedCourseID, 0
+bsc_inner:
+    mov eax, gridInner
+    cmp eax, gridIndex
+    jae bsc_assign
+    mov ebx, gridInner
+    mov eax, courseIds[ebx*4]
+    test eax, eax
+    jz bsc_inner_next
+    mov eax, gridIndex
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+courseoff]
+    mov eax, gridInner
+    imul eax, recordsize
+    mov edi, OFFSET records
+    add edi, eax
+    lea edi, [edi+courseoff]
+    call compareStr
+    cmp eax, 1
+    jne bsc_inner_next
+    mov ebx, gridInner
+    mov eax, courseIds[ebx*4]
+    mov gridMatchedCourseID, eax
+    jmp bsc_assign
+bsc_inner_next:
+    inc gridInner
+    jmp bsc_inner
+bsc_assign:
+    mov ebx, gridIndex
+    cmp gridMatchedCourseID, 0
+    jne bsc_use_existing
+    inc gridCourseCount
+    mov eax, gridCourseCount
+    mov courseIds[ebx*4], eax
+    jmp bsc_outer_next
+bsc_use_existing:
+    mov eax, gridMatchedCourseID
+    mov courseIds[ebx*4], eax
+    jmp bsc_outer_next
+bsc_not_section:
+    mov ebx, gridIndex
+    mov DWORD PTR courseIds[ebx*4], 0
+bsc_outer_next:
+    inc gridIndex
+    jmp bsc_outer
+bsc_done:
+    ret
+buildSectionCourseIDs ENDP
 
 ; Print each weekday on one row and each of its eight slots in a column.
 showTimetableGrid PROC USES eax ebx ecx edx esi edi
@@ -1226,6 +1711,14 @@ showTimetableGrid PROC USES eax ebx ecx edx esi edi
     call Crlf
     cmp recordcount, 0
     je grid_empty
+
+    mov edx, OFFSET gridSectionPrompt
+    call WriteString
+    mov edx, OFFSET gridSection
+    mov ecx, 9
+    call ReadString
+    mov gridSectionFound, 0
+    call buildSectionCourseIDs
 
     mov esi, OFFSET griddayheader
     mov ecx, 12
@@ -1279,10 +1772,20 @@ grid_find_loop:
     mov eax, [esi+slotoff]
     cmp eax, gridSlot
     jne grid_find_next
+    lea esi, [esi+sectionoff]
+    mov edi, OFFSET gridSection
+    call compareStr
+    cmp eax, 1
+    jne grid_find_next
     mov eax, gridIndex
-    inc eax
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov ebx, gridIndex
+    mov eax, courseIds[ebx*4]
     mov gridRecordNumber, eax
     mov gridFound, 1
+    inc gridSectionFound
     jmp grid_print_cell
 grid_find_next:
     inc gridIndex
@@ -1315,25 +1818,32 @@ grid_done:
     mov edx, OFFSET gridKeyTitle
     call WriteString
     call Crlf
-    mov gridIndex, 0
+    mov gridCourseID, 1
 grid_key_loop:
-    mov eax, gridIndex
+    mov eax, gridCourseID
+    cmp eax, gridCourseCount
+    ja grid_key_done
+    mov gridFindIndex, 0
+grid_find_key:
+    mov eax, gridFindIndex
     cmp eax, recordcount
-    jae grid_key_done
-    mov eax, gridIndex
-    inc eax
+    jae grid_next_key_id
+    mov ebx, gridFindIndex
+    mov eax, courseIds[ebx*4]
+    cmp eax, gridCourseID
+    je grid_key_found
+    inc gridFindIndex
+    jmp grid_find_key
+grid_key_found:
+    mov eax, gridCourseID
     call WriteDec
     mov edx, OFFSET gridKeyCourse
     call WriteString
-    mov eax, gridIndex
+    mov eax, gridFindIndex
     imul eax, recordsize
     mov esi, OFFSET records
     add esi, eax
     lea edx, [esi+courseoff]
-    call WriteString
-    mov edx, OFFSET gridKeySection
-    call WriteString
-    lea edx, [esi+sectionoff]
     call WriteString
     mov edx, OFFSET gridKeyTeacher
     call WriteString
@@ -1344,9 +1854,16 @@ grid_key_loop:
     lea edx, [esi+roomoff]
     call WriteString
     call Crlf
-    inc gridIndex
+grid_next_key_id:
+    inc gridCourseID
     jmp grid_key_loop
 grid_key_done:
+    cmp gridSectionFound, 0
+    jne grid_key_return
+    mov edx, OFFSET notfound_msg
+    call WriteString
+    call Crlf
+grid_key_return:
     ret
 grid_empty:
     mov edx, OFFSET nomsg
@@ -1355,7 +1872,8 @@ grid_empty:
     ret
 showTimetableGrid ENDP
 
-; The grid stays narrow: one class record number in each occupied slot.
+; The grid stays narrow: one course ID in each occupied slot. Repeated meetings
+; of the same weekly course use the same ID.
 gridPrintRecordNumber PROC USES eax ecx
     mov eax, gridRecordNumber
     call WriteDec
@@ -1369,7 +1887,12 @@ gprn_two_digits:
     mov ecx, 3
     jmp gprn_spaces
 gprn_three_digits:
+    cmp gridRecordNumber, 1000
+    jae gprn_four_digits
     mov ecx, 2
+    jmp gprn_spaces
+gprn_four_digits:
+    mov ecx, 1
 gprn_spaces:
     mov al, ' '
 gprn_space_loop:
@@ -1477,14 +2000,21 @@ searchByCourse PROC USES ebx esi edi
     cmp recordcount, 0
     je sc_empty
 
+    call showAvailableCourses
+
 sc_read:
     mov edx, OFFSET cmsg
     call WriteString
     mov edx, OFFSET search_str
-    mov ecx, 19
+    mov ecx, 29
     call ReadString
     cmp eax, 0
-    je sc_read
+    jne sc_input_ok
+    mov edx, OFFSET emptycourseerr
+    call WriteString
+    call Crlf
+    jmp sc_read
+sc_input_ok:
     call Crlf
 
     mov found_flag, 0
@@ -1534,11 +2064,119 @@ sc_empty:
     ret
 searchByCourse ENDP
 
+showAvailableCourses PROC USES eax ebx ecx edx esi edi
+    mov edx, OFFSET availableCoursesTitle
+    call WriteString
+    call Crlf
+    mov availableOuter, 0
+avc_outer:
+    mov eax, availableOuter
+    cmp eax, recordcount
+    jae avc_done
+    mov eax, availableOuter
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+courseoff]
+    mov availablePtr, esi
+    mov availableInner, 0
+    mov availableDuplicate, 0
+avc_inner:
+    mov eax, availableInner
+    cmp eax, availableOuter
+    jae avc_print
+    mov eax, availableInner
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+courseoff]
+    mov edi, availablePtr
+    call compareStr
+    cmp eax, 1
+    je avc_is_duplicate
+    inc availableInner
+    jmp avc_inner
+avc_is_duplicate:
+    mov availableDuplicate, 1
+avc_print:
+    cmp availableDuplicate, 1
+    je avc_next
+    mov esi, availablePtr
+    mov edx, esi
+    call WriteString
+    call Crlf
+avc_next:
+    inc availableOuter
+    jmp avc_outer
+avc_done:
+    call Crlf
+    ret
+showAvailableCourses ENDP
+
+searchByTeacher PROC USES ebx esi edi
+    call Clrscr
+    cmp recordcount, 0
+    je st_empty
+    call showAvailableTeachers
+st_read:
+    mov edx, OFFSET teacherSearchMsg
+    call WriteString
+    mov edx, OFFSET search_str
+    mov ecx, 29
+    call ReadString
+    cmp eax, 0
+    jne st_input_ok
+    mov edx, OFFSET requiredfielderr
+    call WriteString
+    call Crlf
+    jmp st_read
+st_input_ok:
+    call Crlf
+    mov found_flag, 0
+    mov ebx, 0
+st_loop_records:
+    cmp ebx, recordcount
+    jge st_done
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    push esi
+    lea esi, [esi+teacheroff]
+    mov edi, OFFSET search_str
+    call compareStr
+    pop esi
+    cmp eax, 1
+    jne st_next
+    call showFullRecord
+    mov found_flag, 1
+st_next:
+    inc ebx
+    jmp st_loop_records
+st_done:
+    cmp found_flag, 0
+    jne st_wait
+    mov edx, OFFSET notfound_msg
+    call WriteString
+    call Crlf
+st_wait:
+    call WaitMsg
+    ret
+st_empty:
+    mov edx, OFFSET nomsg
+    call WriteString
+    call Crlf
+    call WaitMsg
+    ret
+searchByTeacher ENDP
+
 
 searchBySection PROC USES ebx esi edi
     call Clrscr
     cmp recordcount, 0
     je ss_empty
+
+    call showAvailableSections
 
 ss_read:
     mov edx, OFFSET secmsg
@@ -1547,7 +2185,12 @@ ss_read:
     mov ecx, 9
     call ReadString
     cmp eax, 0
-    je ss_read
+    jne ss_input_ok
+    mov edx, OFFSET emptysectionerr
+    call WriteString
+    call Crlf
+    jmp ss_read
+ss_input_ok:
     call Crlf
 
     mov found_flag, 0
@@ -1575,6 +2218,12 @@ ss_loop:
     call showFullRecord
     mov found_flag, 1
 
+    mov currentRecordPtr, esi
+    mov currentRecordIndex, ebx
+    call isFirstCourseMeeting
+    cmp eax, 1
+    jne ss_next
+    mov esi, currentRecordPtr
     mov eax, [esi+creditoff]
     add total_cr, eax
 
@@ -1610,6 +2259,141 @@ ss_empty:
     ret
 searchBySection ENDP
 
+showAvailableSections PROC USES eax ebx ecx edx esi edi
+    mov edx, OFFSET availableSectionsTitle
+    call WriteString
+    call Crlf
+    mov availableOuter, 0
+avs_outer:
+    mov eax, availableOuter
+    cmp eax, recordcount
+    jae avs_done
+    mov eax, availableOuter
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+sectionoff]
+    mov availablePtr, esi
+    mov availableInner, 0
+    mov availableDuplicate, 0
+avs_inner:
+    mov eax, availableInner
+    cmp eax, availableOuter
+    jae avs_print
+    mov eax, availableInner
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+sectionoff]
+    mov edi, availablePtr
+    call compareStr
+    cmp eax, 1
+    je avs_is_duplicate
+    inc availableInner
+    jmp avs_inner
+avs_is_duplicate:
+    mov availableDuplicate, 1
+avs_print:
+    cmp availableDuplicate, 1
+    je avs_next
+    mov esi, availablePtr
+    mov edx, esi
+    call WriteString
+    call Crlf
+avs_next:
+    inc availableOuter
+    jmp avs_outer
+avs_done:
+    call Crlf
+    ret
+showAvailableSections ENDP
+
+showAvailableTeachers PROC USES eax ebx ecx edx esi edi
+    mov edx, OFFSET availableTeachersTitle
+    call WriteString
+    call Crlf
+    mov availableOuter, 0
+avt_outer:
+    mov eax, availableOuter
+    cmp eax, recordcount
+    jae avt_done
+    mov eax, availableOuter
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+teacheroff]
+    mov availablePtr, esi
+    mov availableInner, 0
+    mov availableDuplicate, 0
+avt_inner:
+    mov eax, availableInner
+    cmp eax, availableOuter
+    jae avt_print
+    mov eax, availableInner
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    lea esi, [esi+teacheroff]
+    mov edi, availablePtr
+    call compareStr
+    cmp eax, 1
+    je avt_is_duplicate
+    inc availableInner
+    jmp avt_inner
+avt_is_duplicate:
+    mov availableDuplicate, 1
+avt_print:
+    cmp availableDuplicate, 1
+    je avt_next
+    mov esi, availablePtr
+    mov edx, esi
+    call WriteString
+    call Crlf
+avt_next:
+    inc availableOuter
+    jmp avt_outer
+avt_done:
+    call Crlf
+    ret
+showAvailableTeachers ENDP
+
+; Return 1 only for the first weekly meeting of a course in the selected section.
+isFirstCourseMeeting PROC USES ebx esi edi
+    mov creditScanIndex, 0
+ifcm_loop:
+    mov eax, creditScanIndex
+    cmp eax, currentRecordIndex
+    jae ifcm_first
+    mov esi, OFFSET records
+    mov eax, creditScanIndex
+    imul eax, recordsize
+    add esi, eax
+    lea esi, [esi+sectionoff]
+    mov edi, OFFSET search_str
+    call compareStr
+    cmp eax, 1
+    jne ifcm_next
+    mov esi, OFFSET records
+    mov eax, creditScanIndex
+    imul eax, recordsize
+    add esi, eax
+    mov edi, currentRecordPtr
+    lea esi, [esi+courseoff]
+    lea edi, [edi+courseoff]
+    call compareStr
+    cmp eax, 1
+    je ifcm_not_first
+ifcm_next:
+    inc creditScanIndex
+    jmp ifcm_loop
+ifcm_first:
+    mov eax, 1
+    ret
+ifcm_not_first:
+    xor eax, eax
+    ret
+isFirstCourseMeeting ENDP
+
 
 filterByDay PROC USES ebx esi
     call Clrscr
@@ -1622,9 +2406,19 @@ fd_input:
     call ReadInt
 
     cmp eax, 1
-    jl fd_input
+    jge fd_day_min
+    mov edx, OFFSET dayerr
+    call WriteString
+    call Crlf
+    jmp fd_input
+fd_day_min:
     cmp eax, 5
-    jg fd_input
+    jle fd_day_valid
+    mov edx, OFFSET dayerr
+    call WriteString
+    call Crlf
+    jmp fd_input
+fd_day_valid:
 
     mov day_filter, eax
     call Crlf
@@ -1688,7 +2482,7 @@ loadData PROC USES eax ebx ecx edx esi edi
     mov eax, ebx
     call CloseFile
     mov eax, DWORD PTR fileBuffer
-    cmp eax, 100
+    cmp eax, MAX_RECORDS
     ja ld_seed
     mov recordcount, eax
     mov ecx, recordcount
