@@ -1,8 +1,8 @@
 INCLUDE Irvine32.inc
 
 MAX_RECORDS EQU 1000
-MAX_SECTIONS EQU 25
-MAX_COURSES EQU 50
+MAX_SECTIONS EQU 50
+MAX_COURSES EQU 100
 
 ; har class ka record store karne ke liye structure
 classrecord STRUCT
@@ -131,9 +131,8 @@ editingIndex DWORD 0FFFFFFFFh
 validationPtr DWORD 0
 sectionMatch DWORD 0
 courseMatch DWORD 0
+breakLookupPtr DWORD 0
 sectionLookupPtr DWORD 0
-sectionStudentCount DWORD 0
-sectionBreakValue DWORD 0
 courseMeetingCount DWORD 0
 currentRecordPtr DWORD 0
 currentRecordIndex DWORD 0
@@ -239,7 +238,7 @@ sample3_s BYTE "BCS-3B",0
 
 main PROC
 
-    ; program start hote hi 3 sample classes load kar rahe hain
+    ; program start hote hi saved data ya 3 sample classes load kar rahe hain
     call loadData
 
 menu:
@@ -612,23 +611,11 @@ sectioninput:
     mov ecx, 9
     call ReadString
     cmp eax, 0
-    jne sectionlookup
+    jne dayinput
     mov edx, OFFSET requiredfielderr
     call WriteString
     call Crlf
     jmp sectioninput
-
-sectionlookup:
-    mov sectionLookupPtr, esi
-    call findSectionEnrollment
-    mov sectionStudentCount, eax
-    cmp eax, 0
-    je dayinput
-    mov edx, OFFSET studentsReusedMsg
-    call WriteString
-    mov eax, sectionStudentCount
-    call WriteDec
-    call Crlf
 
 dayinput:
 
@@ -681,8 +668,8 @@ slotvalid:
     mov [esi+slotoff], eax
 
 breakinput:
+    mov breakLookupPtr, esi
     call findSectionDayBreak
-    mov sectionBreakValue, eax
     cmp eax, 0
     jne breakreuse
     mov edx, OFFSET breakmsg
@@ -706,7 +693,6 @@ breakvalid:
     jmp kindinput
 
 breakreuse:
-    mov eax, sectionBreakValue
     mov [esi+breakoff], eax
     mov edx, OFFSET breakReusedMsg
     call WriteString
@@ -777,7 +763,8 @@ creditok:
     mov [esi+creditoff], eax
 
 studentinput:
-    mov eax, sectionStudentCount
+    mov sectionLookupPtr, esi
+    call findSectionEnrollment
     cmp eax, 0
     jne studentreuse
     mov edx, OFFSET studentsmsg
@@ -802,11 +789,54 @@ studentsvalid:
 
 studentreuse:
     mov [esi+studentsoff], eax
+    mov edx, OFFSET studentsReusedMsg
+    call WriteString
+    mov esi, sectionLookupPtr
+    mov eax, [esi+studentsoff]
+    call WriteDec
+    call Crlf
+
     ret
 
 readRecord ENDP
 
-; Return the saved enrollment for an existing section, or zero if it is new.
+; Find a saved break for the same section and weekday. Skip the record being edited.
+findSectionDayBreak PROC USES ebx esi edi
+    xor ebx, ebx
+fsdb_loop:
+    cmp ebx, recordcount
+    jae fsdb_not_found
+    cmp ebx, editingIndex
+    je fsdb_next
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov edi, breakLookupPtr
+    lea esi, [esi+sectionoff]
+    lea edi, [edi+sectionoff]
+    call compareStr
+    cmp eax, 1
+    jne fsdb_next
+    mov eax, ebx
+    imul eax, recordsize
+    mov esi, OFFSET records
+    add esi, eax
+    mov edi, breakLookupPtr
+    mov eax, [esi+dayoff]
+    cmp eax, [edi+dayoff]
+    jne fsdb_next
+    mov eax, [esi+breakoff]
+    ret
+fsdb_next:
+    inc ebx
+    jmp fsdb_loop
+fsdb_not_found:
+    xor eax, eax
+    ret
+findSectionDayBreak ENDP
+
+; Return a section's saved enrollment, or zero when the section is new.
 findSectionEnrollment PROC USES ebx esi edi
     xor ebx, ebx
 fse_loop:
@@ -835,42 +865,6 @@ fse_not_found:
     xor eax, eax
     ret
 findSectionEnrollment ENDP
-
-; Return a saved break for the same section/day, skipping the edited record.
-findSectionDayBreak PROC USES ebx esi edi
-    xor ebx, ebx
-fsdb_loop:
-    cmp ebx, recordcount
-    jae fsdb_not_found
-    cmp ebx, editingIndex
-    je fsdb_next
-    mov eax, ebx
-    imul eax, recordsize
-    mov esi, OFFSET records
-    add esi, eax
-    mov edi, sectionLookupPtr
-    lea esi, [esi+sectionoff]
-    lea edi, [edi+sectionoff]
-    call compareStr
-    cmp eax, 1
-    jne fsdb_next
-    mov eax, ebx
-    imul eax, recordsize
-    mov esi, OFFSET records
-    add esi, eax
-    mov edi, sectionLookupPtr
-    mov eax, [esi+dayoff]
-    cmp eax, [edi+dayoff]
-    jne fsdb_next
-    mov eax, [esi+breakoff]
-    ret
-fsdb_next:
-    inc ebx
-    jmp fsdb_loop
-fsdb_not_found:
-    xor eax, eax
-    ret
-findSectionDayBreak ENDP
 
 
 ; new record array ke end mein add karna
@@ -1460,7 +1454,8 @@ vr_next:
 vr_day_done:
     cmp ecx, 8
     jae vr_daily_bad
-    mov eax, [validationPtr+creditoff]
+    mov esi, validationPtr
+    mov eax, [esi+creditoff]
     cmp courseMeetingCount, eax
     jae vr_meeting_bad
     cmp newSectionFound, 1
@@ -1571,9 +1566,38 @@ showFullRecord PROC USES edx eax
     call WriteDec
     call Crlf
 
+    mov edx, OFFSET rtime
+    call WriteString
+    call printStartTime
+    call Crlf
+
     mov edx, OFFSET rcredit
     call WriteString
     mov eax, [esi+creditoff]
+    call WriteDec
+    call Crlf
+
+    mov edx, OFFSET rkind
+    call WriteString
+    mov eax, [esi+kindoff]
+    cmp eax, 1
+    je sfr_core
+    cmp eax, 2
+    je sfr_normal
+    mov edx, OFFSET labmsg
+    jmp sfr_kind_done
+sfr_core:
+    mov edx, OFFSET coremsg
+    jmp sfr_kind_done
+sfr_normal:
+    mov edx, OFFSET normalmsg
+sfr_kind_done:
+    call WriteString
+    call Crlf
+
+    mov edx, OFFSET rstudents
+    call WriteString
+    mov eax, [esi+studentsoff]
     call WriteDec
     call Crlf
 
@@ -1814,11 +1838,22 @@ showTimetableGrid PROC USES eax ebx ecx edx esi edi
     cmp recordcount, 0
     je grid_empty
 
+    call showAvailableSections
+
+grid_read_section:
     mov edx, OFFSET gridSectionPrompt
     call WriteString
     mov edx, OFFSET gridSection
     mov ecx, 9
     call ReadString
+    cmp eax, 0
+    jne grid_section_ok
+    mov edx, OFFSET emptysectionerr
+    call WriteString
+    call Crlf
+    jmp grid_read_section
+grid_section_ok:
+    call Crlf
     mov gridSectionFound, 0
     call buildSectionCourseIDs
 
