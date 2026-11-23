@@ -43,4 +43,4 @@ The Student Panel also supports searching by course, section, or teacher, and fi
 
 The supplied dataset contains the required weekly meeting counts for each course. During manual entry, validation prevents exceeding a course’s credit-based meeting count, but it does not require an admin to enter every required weekly meeting before saving.
 
-The latest source has not been compiled in this workspace because MASM and Irvine32 are unavailable here.
+Keep unislot.dat in the program’s working folder, usually beside the built .exe, so the program loads it at startup and saves admin changes back to it.
